@@ -25,19 +25,8 @@ gradle 的源代码地址 https://github.com/gradle/gradle 我们可以看到gra
 
 那我们继续换个方向来再去open Gradle 吧。".gradle" 文件是一个很好的入手点：
 ~~~groovy
-plugins {
- id 'groovy'
- id 'java-library'
-}
+apply plugin: 'java'
 
-group 'com.example'
-version '1.1-SNAPSHOT'
-
-allprojects {
-    repositories {
-        mavenCentral()
-    }
-}
 ...
 dependencies {
     compile 'org.codehaus.groovy:groovy-all:2.3.11'
@@ -61,26 +50,27 @@ dependencies {
 ....
 public class build_84d5gswk7zgm2rs9c1flrc0wd extends ProjectScript{
 ....
-    public Object run()
+     public Object run()
     {
         CallSite acallsite[] = $getCallSiteArray();
-       
-         public final class _run_closure1 extends Closure
-            implements ...
-         {
-             ....
-            public Object doCall(Object it)
-            {
-             ....
-            }
-         }
+        acallsite[0].callCurrent(this,ScriptBytecodeAdapter.createMap(new Object[] {
+            "plugin", "com.android.application"
+        }));
+       ...
     }
 
-     private static void $createCallSiteArray_1(String as[)
+    private static void $createCallSiteArray_1(String as[])
     {
-        as[0] = "google";
-        as[1] = "jcenter";
-        as[2] = "mavenLocal";
+        as[0] = "apply";
+        ...
+    }
+
+    private static CallSite[] $getCallSiteArray()
+    {
+      ...
+        callsitearray = $createCallSiteArray_1(s);
+      ...
+        return callsitearray.array;
     }
 
 }
