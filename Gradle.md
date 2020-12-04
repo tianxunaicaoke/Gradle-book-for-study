@@ -2,10 +2,10 @@
 
 本文是针对的群体使用过Gradle的一些年轻人哈，看了之后，耗子尾汁。
 
-[TOC]
 
 gradle 的源代码地址 https://github.com/gradle/gradle 我们可以看到gradle的源码里（基于 gradle 大版本的 version 6）java 占比44% groovy 占比46%, 源码里面大部分的核心代码核心模块都是java 语言编写,test 代码主要是由groovy语言编写。
 <img src="language.PNG"/>
+图1-1
 
 ## 目录结构
 往往高端的代码都以一种朴素的呈现方式，以gradle-6.3-all 为例, 解压之后目录结构如下：
@@ -83,6 +83,7 @@ public class build_xxxx extends ProjectScript{
 ~~~
 熟悉groovy script 脚本的同学大概就知道，这个脚本的run方法是运行的入口, 通过我们上边所提到过的MOP, 就把脚本的编译和方法的调用分开了(这里用到的是的运行时的metaprogramming), 简单描述就是编译的时候脚本文件只要符合groovy 或者java语法要求, 而函数的具体实现在编译期是不需要知道的，只是记录函数的名字和参数，在运行的时候根据特定的查找顺序去寻找方法的调用, 没图没真相， 上图：
 <img src = "groovyRTMOP.png" />
+图1-2
 
 ### Gradle 脚本的编译与调用时机
 在上面我们简单的过了一下脚本的一些信息吧， 现在肯定有同学会觉得更加疑问， 这个脚本是谁去编程class的， 是谁？？？站出来， OK， 首先当然是你的电脑，并且也是你正在运行的Gradle去编译的, Gradle 运行之后不久就会查找settings.gradle,  然后通过settings.gradle
