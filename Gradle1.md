@@ -96,7 +96,7 @@ public DynamicInvokeResult tryInvokeMethod(String name, Object... arguments) {
         }
 ~~~
 
-ScriptDynamicObject 顾名思义是将 XXScript invokeMethod 方法动态转移。在其内部又有两个动态代理其中 scriptObject 是 BeanDynamicObject, dynamicTarget 就是上面提到的 DefaultProject。从 tryInvokeMethod 方法中可以看到，先通过 BeanDynamicObject 代理去找方法调用(也就是找 apply 真正实现的地方)，如果没有找到，就会去在 dynamicTarget(DefaultProject) 中寻找。
+ScriptDynamicObject 顾名思义是将 XXScript invokeMethod 方法动态转移。在其内部又有两个动态代理其中 scriptObject 是 BeanDynamicObject, dynamicTarget 就是上面提到的 DefaultProject 里的 ExtensibleDynamicObject。从 tryInvokeMethod 方法中可以看到，先通过 BeanDynamicObject 代理去找方法调用(也就是找 apply 真正实现的地方)，如果没有找到，就会去在 dynamicTarger 中寻找。
 
 ~~~
 private static final class ScriptDynamicObject extends AbstractDynamicObject {
@@ -118,7 +118,7 @@ private static final class ScriptDynamicObject extends AbstractDynamicObject {
 }
 ~~~
 
-这里简单的描述一下 BeanDynamicObject 作用是使用常规反射来提供对bean的属性和方法的访问，这句解释是摘自 BeanDynamicObject 的类文档，言简意赅，在这里就是把 XXScript 包装了一下。 所以用上面的举的栗子，通过反射尝试访问 XXScript 里的 apply 方法， 在XXScript 类的基类 ProjectScript 里刚好拥有 apply 方法。所以栗子里的方法找到了实现的地方。
+这里简单的描述一下 BeanDynamicObject 的作用是使用常规反射来提供对bean的属性和方法的访问，这句解释是摘自 BeanDynamicObject 的类文档，言简意赅，在这里就是把 XXScript 包装了一下。 所以用上面的举的栗子，通过反射尝试访问 XXScript 里的 apply 方法， 在XXScript 类的基类 ProjectScript 里刚好拥有 apply 方法。所以栗子里的方法找到了实现的地方。
 ~~~
 public abstract class ProjectScript extends PluginsAwareScript {
 
@@ -144,3 +144,96 @@ apply plugin:"java"
  }
 
 ~~~
+
+在 XXScript 以及它的基类里面并没有 dependencies 这个方法，所以根据上面的逻辑，Gradle 会转到 dynamicTarget(ExtensibleDynamicObject) 中寻找。
+
+这里需要停一下，分析一下 ExtensibleDynamicObject 这个类，在这个类中有一段函数：
+~~~
+ private void updateDelegates() {
+        DynamicObject[] delegates = new DynamicObject[6];
+        delegates[0] = dynamicDelegate;
+        delegates[1] = extraPropertiesDynamicObject;
+        int idx = 2;
+        if (beforeConvention != null) {
+            delegates[idx++] = beforeConvention;
+        }
+        if (convention != null) {
+            delegates[idx++] = convention.getExtensionsAsDynamicObject();
+        }
+        if (afterConvention != null) {
+            delegates[idx++] = afterConvention;
+        }
+        boolean addedParent = false;
+        if (parent != null) {
+            addedParent = true;
+            delegates[idx++] = parent;
+        }
+        DynamicObject[] objects = new DynamicObject[idx];
+        System.arraycopy(delegates, 0, objects, 0, idx);
+        setObjects(objects);
+
+        if (addedParent) {
+            idx--;
+            objects = new DynamicObject[idx];
+            System.arraycopy(delegates, 0, objects, 0, idx);
+            setObjectsForUpdate(objects);
+        }
+    }
+~~~
+DynamicObject[] delegates = new DynamicObject[6]; 意思是指 ExtensibleDynamicObject 有6个方法的 Delegate，查找方法的调用最终会按顺序在这6个 Delegate 中去寻找。在这里我先引用一下官网的上的一个小节：
+https://docs.gradle.org/current/dsl/org.gradle.api.Project.html#N15050 
+~~~
+A project has 5 method 'scopes', which it searches for methods:
+
+1. The Project object itself.
+2. The build file. The project searches for a matching method declared in the build file.
+3. The extensions added to the project by the plugins. Each extension is available as a method which takes a closure or Action as a parameter.
+The convention methods added to the project by the plugins. A plugin can add properties and method to a project through the project's Convention object.
+4. The tasks of the project. A method is added for each task, using the name of the task as the method name and taking a single closure or Action parameter. The method calls the Task.configure(groovy.lang.Closure) method for the associated task with the provided closure. For example, if the project has a task called compile, then a method is added with the following signature: void compile(Closure configureClosure).
+5. The methods of the parent project, recursively up to the root project.
+A property of the project whose value is a closure. The closure is treated as a method and called with the provided parameters. The property is located as described above.
+~~~
+这里我觉得官网上的文档有点欠妥，从我们上面的分析，The build file. The project searches for a matching method declared in the build file. 应该是在 The Project object itself 之前。
+
+转回话题，我们来观察一下 ExtensibleDynamicObject 的构造函数：
+~~~
+public ExtensibleDynamicObject(Object delegate, Class<?> publicType, InstanceGenerator instanceGenerator) {
+        this(delegate, createDynamicObject(delegate, publicType), new DefaultConvention(instanceGenerator));
+    }
+
+    ...
+    public ExtensibleDynamicObject(Object delegate, AbstractDynamicObject dynamicDelegate, Convention convention) {
+        this.dynamicDelegate = dynamicDelegate;
+        this.convention = convention;
+        this.extraPropertiesDynamicObject = new ExtraPropertiesDynamicObjectAdapter(delegate.getClass(), convention.getExtraProperties());
+
+        updateDelegates();
+    }
+
+     private static BeanDynamicObject createDynamicObject(Object delegate, Class<?> publicType) {
+        return new BeanDynamicObject(delegate, publicType);
+    }
+~~~
+同时还有 new 它的地方：
+~~~
+ class DefaultProject ...{
+
+             extensibleDynamicObject = new ExtensibleDynamicObject(this, Project.class, services.get(InstantiatorFactory.class).decorateLenient(services));
+
+ }
+~~~
+综上所得，dynamicDelegate 就是 BeanDynamicObject 把 DefaultProject 包了一层，结合上面提到过的内容，dependencies 方法是需要在 DefaultProject 中寻找，结果如下：
+~~~
+ class DefaultProject ...{
+    ...
+    @Override
+    public void dependencies(Closure configureClosure) {
+        ConfigureUtil.configure(configureClosure, getDependencies());
+    }
+    ...
+ }
+ 
+~~~
+
+看到这里，是不是会比较清晰一些，这里调用的 configure 函数，就是去配置 dependency 的入口，我会再后面的章节继续带着大家深入阅读的，现在就先止步于这个地方。
+下一章节会继续上面的话题，以及如何使用 Plugin、Convention 等来扩展函数的调用映射。有篇幅的话还会介绍 NamedDomainObject 相关一些知识。敬请期待。。。
