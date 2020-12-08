@@ -3,9 +3,9 @@
 没有正确的选择， 所以我们只能努力把自己的选择变得正确。
 
 ## Gradle 脚本的函数的调用
-接着上一篇文章的尾巴，现在需要在详细一点考虑函数的调用。这里所说的函数调用是指 '.gradle' 里的那些函数调用是怎么在Gradle映射到方法的实现。
+接着上一篇文章的尾巴，现在需要在详细一点考虑函数的调用。这里所说的函数调用是指 '.gradle' 里的那些函数调用是怎么在Gradle 中映射到方法的实现。
 
-DynamicObject 接口位于Gradle源码里的 core-api 模块：
+其中最基础的一个接口是 DynamicObject 接口，它位于Gradle源码里的 core-api 模块，代码如下：
 ~~~
 public interface DynamicObject extends MethodAccess, PropertyAccess {
     /**
@@ -39,21 +39,23 @@ public interface DynamicObject extends MethodAccess, PropertyAccess {
     Object invokeMethod(String name, Object... arguments) throws MissingMethodException;
 }
 ~~~
-AbstractDynamicObject 继承自DynamicObject，它是 Gradle 脚本函数调用的关键。画个简单的图来表示一下：
+接口的一个抽象实现是  AbstractDynamicObject，它继承自DynamicObject，是 Gradle 脚本函数调用的关键。画个简单的图来表示一下：
 
 <img src="GradleMethodSeek.svg" />
 
 <center>图2-1 流程图</center>
 
-当 Gradle 扫描了项目工程获得setting.gradle 文件，识别出所有 project (root project and subproject) 并且在 Gradle runtime 中创建对应DefaultProject 之后，便加载这些 project 对应的 Gradle 脚本文件，接着编译成 class(XXScript)，如上图所示，Gradle runtime 会调用 XXScript.run() 方法。在这里有一步操作是比较关键并且在 run 方法之前运行，就是把 DefaultProject 传给 XXScript。而DefaultProject 会在后面 DynamicInvoke System 里用到。
+从图上可以看出， Gradle 扫描 
+ setting.gradle 文件并会识别整个项目的所有 project (root project and subproject) ，同时会在 Gradle runtime 中创建对应的DefaultProject 对象，然后加载这些 project 对应的 Gradle 脚本文件(也就是各个项目目录中的 build.gradle 文件)，接着把它们编译成 class(XXScript) 文件，如上图所示，Gradle runtime 会调用 XXScript.run() 方法开始解析并执行脚本。在这里有一步操作是比较关键，并且在 run 方法之前运行，就是把 DefaultProject 传给 XXScript。而这一步操作的作用，会在后面 DynamicInvoke System 里讲解，先埋个伏笔。
 
-这里的 xxScript 就是前文中的 "build_xxxx extends ProjectScript" 忘记的可以回顾一下上一篇文章。
+我们这里说的 xxScript 就是前文中所提到的 "build_xxxx extends ProjectScript"， 忘记的同学可以回顾一下上一篇文章。
 
-Groovy 的 RuntimeMateProgramma 机制会把方法调用映射到 invokeMethod 上，在这里的 invokeMethod 在xxScript 的基类 BaseScript 中。如图2-1 所示接下来就会通过 invokeMethod 方法进入 DynamicInvoke System 世界的大门，高潮来了。
+Gradle 脚本的执行是利用了 Groovy 的 RuntimeMateProgramma 机制，它会把方法调用最终映射到特定的类的 invokeMethod 方法上，这里的 invokeMethod 在xxScript 的基类 BaseScript 中。如图2-1 所示接下来就会通过 invokeMethod 方法的调用进入 DynamicInvoke System 世界的大门。
 
 
 ## 动态调用系统 
 先把这个系统大概的类图勾勒一下，其中重点关注一下图2-1中所示的 ScriptDynamicObject、BeanDynamicObject、以及 ExtensibleDynamicObject。
+
 <img src="DynamicInvoke.svg" />
 <center>图2-2 类图</center>
 
@@ -73,7 +75,7 @@ public abstract class BasicScript extends Script implements .. {
  // apply 是函数名字， 参数是一个 map 类型，key 是 plugin ， Value 是"java".
 ~~~
 
-dynamicObject.invokeMethod 调用的是 ScriptDynamicObject 方法的 invokeMethod ，ScriptDynamicObject 的 invokeMethod 方法实现在基类
+dynamicObject 的类型是 ScriptDynamicObject ，所以这里的 invokeMethod 方法也就是 ScriptDynamicObject 的 invokeMethod 方法，而 ScriptDynamicObject 的 invokeMethod 方法实现在基类
 AbstractDynamicObject, 如下所示：
 
 ~~~
@@ -84,7 +86,7 @@ public Object invokeMethod(String name, Object... arguments) ..{
        ...
     }
 ~~~
-接着 invokeMethod 继续调用了 ScriptDynamicObject 的 tryInvokeMethod ，如下所示：
+接着 invokeMethod 又继续调用了 ScriptDynamicObject 的 tryInvokeMethod ，如下所示：
 
 ~~~
 public DynamicInvokeResult tryInvokeMethod(String name, Object... arguments) {
@@ -96,7 +98,7 @@ public DynamicInvokeResult tryInvokeMethod(String name, Object... arguments) {
         }
 ~~~
 
-ScriptDynamicObject 顾名思义是将 XXScript invokeMethod 方法动态转移。在其内部又有两个动态代理其中 scriptObject 是 BeanDynamicObject, dynamicTarget 就是上面提到的 DefaultProject 里的 ExtensibleDynamicObject。从 tryInvokeMethod 方法中可以看到，先通过 BeanDynamicObject 代理去找方法调用(也就是找 apply 真正实现的地方)，如果没有找到，就会去在 dynamicTarger 中寻找。
+ScriptDynamicObject 顾名思义是将 XXScript invokeMethod 方法动态转移到自身的一个类。我们可以看到在其内部又有两个动态代理对象，其中 scriptObject 的类型是 BeanDynamicObject，而 另外的一个dynamicTarget 就是上面提到的 DefaultProject 里的 ExtensibleDynamicObject 对象。从 tryInvokeMethod 方法中可以看到，先通过 BeanDynamicObject 类型的代理去找方法调用(也就是找 apply 真正实现的地方)，如果没有找到，就会去在 dynamicTarget 中寻找方法调用。
 
 ~~~
 private static final class ScriptDynamicObject extends AbstractDynamicObject {
@@ -145,7 +147,7 @@ apply plugin:"java"
 
 ~~~
 
-在 XXScript 以及它的基类里面并没有 dependencies 这个方法，所以根据上面的逻辑，Gradle 会转到 dynamicTarget(ExtensibleDynamicObject) 中寻找。
+根据我们上面所得的结论，首先要在 XXScript 以及它的基类里面查找，但是并没有发现 dependencies 这个方法，所以 Gradle 会转到 dynamicTarget(ExtensibleDynamicObject) 中寻找。
 
 这里需要停一下，分析一下 ExtensibleDynamicObject 这个类，在这个类中有一段函数：
 ~~~
