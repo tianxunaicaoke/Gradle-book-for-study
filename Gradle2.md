@@ -1,4 +1,4 @@
-# Gradle 入门 第三篇
+# Gradle 进阶 第三篇
 
 破山中贼易，破心中贼难
 
@@ -25,7 +25,7 @@ Convention 的字面意思是指约定，而 Extension 的字面意思是扩展�
         return javaConvention;
     }
 ~~~
-我们看到 JavaBasePlugin 通过添加了一些 Extensions 扩展了 Gradle。
+我们看到 JavaBasePlugin 通过添加了一些 Extensions 扩展了 Gradle。或者说对于 Gradle apply 的 Plugin，其实 Gradle 并没有完全定义这些 Plugin 的一些配置行为，但是 Convention 可以完成对于自定义 Plugin 的进行配置，是 Plugin 可以正常工作的基石。
 
 在继续介绍之前我先把先关的两个接口展示一下：
 ~~~
@@ -112,6 +112,7 @@ public class DefaultConvention implements Convention, ExtensionContainerInternal
 
 ## Plugin 的扩展
 
+这里的扩展是指的对于 apply 了某个 Plugin 之后，Gradle 脚本里的方法查找的扩展。
 先以一张图来承上启下：
 <img src="PluginExtend.png" />
 
@@ -182,4 +183,31 @@ android {
     }
 }
 ~~~
-在 apply 了 com.android.application plugin 之后，会以"android" 为名字，把一个 BaseExtension 加入 Project 中的 Convention， 所以当脚本运行到 android{} 时，就是用{}里的闭包来配置 BaseExtension。
+在 apply 了 com.android.application plugin 之后，会以"android" 为名字，把一个 BaseExtension 加入 Project 中的 Convention，所以当脚本运行到 android{} 时，其实就是运行了 android(closure)，就是用{}里的闭包来配置 BaseExtension。
+
+在上面的代码里，有一段：
+~~~
+        for (Object object : plugins.values()) {
+                BeanDynamicObject dynamicObject = asDynamicObject(object).withNotImplementsMissing();
+                DynamicInvokeResult result = dynamicObject.tryInvokeMethod(name, args);
+                if (result.isFound()) {
+                    return result;
+                }
+        }
+~~~
+这里的 plugins 也是一些扩展，通过 getExtensions() 由对应的 Plugin 来注入到 Gradle 系统中。举个相应的例子:
+~~~
+plugins {
+    id 'java'
+}
+
+sourceSets {
+  main {
+    java {
+      exclude 'some/unwanted/package/**'
+    }
+  }
+}
+~~~
+
+和上面所示不同的地方在于 android {} 是 Configure Extension Method，会走一个配置流程（configureExtension(name, args)），我们下一篇会详细讲解，但是 sourceSets 是直接去寻找调用（tryInvokeMethod）。由于篇幅有限，这一章还没有来的及引入 NamedDomainContainer 相关的逻辑，只能放到后面再讲解。
