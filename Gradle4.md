@@ -117,3 +117,98 @@ task clean(type: Delete) {
 
 ~~~
 其中 getInitialPluginRequests 就是获得脚本里的 Plugin 请求，plugins { id 'com.android.application' }，接着合并完所有的 Plugin 请求之后调用 applyPlugins 方法去解析 Plugin 请求。
+
+~~~
+    @Override
+    public void applyPlugins(final PluginRequests requests, final ScriptHandlerInternal scriptHandler, @Nullable final PluginManagerInternal target, final ClassLoaderScope classLoaderScope) {
+        if (target == null || requests.isEmpty()) {
+            defineScriptHandlerClassScope(scriptHandler, classLoaderScope, Collections.emptyList());
+            return;
+        }
+
+        final PluginResolver effectivePluginResolver = wrapInAlreadyInClasspathResolver(classLoaderScope);
+        if (!requests.isEmpty()) {
+            addPluginArtifactRepositories(scriptHandler.getRepositories());
+        }
+        List<Result> results = resolvePluginRequests(requests, effectivePluginResolver);
+
+        // Could be different to ids in the requests as they may be unqualified
+        final Map<Result, PluginId> legacyActualPluginIds = newLinkedHashMap();
+        final Map<Result, PluginImplementation<?>> pluginImpls = newLinkedHashMap();
+        final Map<Result, PluginImplementation<?>> pluginImplsFromOtherLoaders = newLinkedHashMap();
+
+        if (!results.isEmpty()) {
+            for (final Result result : results) {
+                applyPlugin(result.request, result.found.getPluginId(), new Runnable() {
+                    @Override
+                    public void run() {
+                        result.found.execute(new PluginResolveContext() {
+                            @Override
+                            public void addLegacy(PluginId pluginId, Object dependencyNotation) {
+                                legacyActualPluginIds.put(result, pluginId);
+                                scriptHandler.addScriptClassPathDependency(dependencyNotation);
+                            }
+
+                            @Override
+                            public void add(PluginImplementation<?> plugin) {
+                                pluginImpls.put(result, plugin);
+                            }
+
+                            @Override
+                            public void addFromDifferentLoader(PluginImplementation<?> plugin) {
+                                pluginImpls.put(result, plugin);
+                                pluginImplsFromOtherLoaders.put(result, plugin);
+                            }
+                        });
+                    }
+                });
+            }
+        }
+
+        defineScriptHandlerClassScope(scriptHandler, classLoaderScope, pluginImplsFromOtherLoaders.values());
+        applyLegacyPlugins(target, legacyActualPluginIds);
+        applyPlugins(target, pluginImpls);
+    }
+~~~
+解释一下四个参数，第一个 PluginRequests 是通过读取 plugins{} 里的插件请求并且合并了自动添加的一些 core Plugin 的请求。第二个参数 ScriptHandlerInternal 的实现类是 DefaultScriptHandler，
+~~~
+public class DefaultScriptHandler implements ScriptHandler, ScriptHandlerInternal, DynamicObjectAware {
+  ...
+    @Override
+    public void dependencies(Closure configureClosure) {
+        ConfigureUtil.configure(configureClosure, getDependencies());
+    }
+  ...
+}
+~~~
+
+其中的 dependencies 方法就是 buildscript {dependencies {}}的具体实现。第三个参数 PluginManagerInternal 的实现类，就是我在上文提到的 DefaultPluginManager，第四个参数 ClassLoaderScope Represents a particular node in the ClassLoader graph（这是源码里的注解，觉得的翻译的话影响理解）。
+
+回归正题，applyPlugins 里第一步会通过 PluginResolver 去解析 PluginRequest，并且返回解析好的 Result，代码如下：
+~~~
+ private List<Result> resolvePluginRequests(PluginRequests requests, PluginResolver effectivePluginResolver) {
+        return collect(requests, request -> {
+            PluginRequestInternal configuredRequest = pluginResolutionStrategy.applyTo(request);
+            return resolveToFoundResult(effectivePluginResolver, configuredRequest);
+        });
+    }
+~~~
+注意两点：1. PluginResolver 的实现有多个，它们串联在一起，将从头到尾搜索每一个 Resolver，直到找到插件。2. 每一个 PluginRequest 如果找到结果，就会封装成一个 Result 返回，在 Result 里有一个 PluginResolution。上一个代码片：
+~~~
+public class ClassPathPluginResolution implements PluginResolution {
+
+   ...
+
+    @Override
+    public void execute(PluginResolveContext pluginResolveContext) {
+        PluginRegistry pluginRegistry = new DefaultPluginRegistry(pluginInspector, parent);
+        PluginImplementation<?> plugin = pluginRegistry.lookup(pluginId);
+        if (plugin == null) {
+            throw new UnknownPluginException("Plugin with id '" + pluginId + "' not found.");
+        }
+        pluginResolveContext.add(plugin);
+    }
+}
+~~~
+最终是通过  PluginImplementation<?> plugin = pluginRegistry.lookup(pluginId);  DefaultPluginRegistry 来查找到 PluginImplementation。
+这个流程比较长，就先到这里。后续会添加。
