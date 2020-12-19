@@ -52,7 +52,7 @@ gradle.plugins 模块中定义了大部分的内置 Plugins，这里就一句带
 
 
 ## plugin 查找
-之前的一篇文章中讲解了有关 Gradle 脚本的编译过程，其中有一个细节省略未说，就是在编译每一个 .gradle 文件的时候都会分为两部分，如果脚本文件里有 buildscript{} 代码块，就会先编译 buildscript{} 里的代码、或者 apply xxx ，或者plugins{} 为一个 class，编译完成之后直接运行，接着编译剩下的代码为一个 class，再运行。
+之前的一篇文章中讲解了有关 Gradle 脚本的编译过程，其中有一个细节省略未说，就是在编译每一个 .gradle 文件的时候都会分为两部分，如果脚本文件里有 buildscript{} 代码块，就会先编译 buildscript{} 里的代码、或者plugins{} 为一个 class，编译完成之后直接运行，接着编译剩下的代码为一个 class，再运行。注意这里有一点需要强调，apply plugin:"xxx" 和 plugins{} 不一样，apply plugin:"xxx" 并不会在第一部分。
 举个简单的例子：
 ~~~
 // case 1
@@ -211,4 +211,51 @@ public class ClassPathPluginResolution implements PluginResolution {
 }
 ~~~
 最终是通过  PluginImplementation<?> plugin = pluginRegistry.lookup(pluginId);  DefaultPluginRegistry 来查找到 PluginImplementation。
-这个流程比较长，就先到这里。后续会添加。
+如何找到 PluginImplementation，code 如下：
+~~~
+this.idMappings = CacheBuilder.newBuilder().build(new CacheLoader<PluginIdLookupCacheKey, Optional<PluginImplementation<?>>>() {
+            @Override
+            public Optional<PluginImplementation<?>> load(@Nonnull PluginIdLookupCacheKey key) {
+                PluginId pluginId = key.getId();
+                ClassLoader classLoader = key.getClassLoader();
+
+                PluginDescriptorLocator locator = new ClassloaderBackedPluginDescriptorLocator(classLoader);
+
+                PluginDescriptor pluginDescriptor = locator.findPluginDescriptor(pluginId.toString());
+                if (pluginDescriptor == null) {
+                    return Optional.empty();
+                }
+
+                String implClassName = pluginDescriptor.getImplementationClassName();
+                if (!GUtil.isTrue(implClassName)) {
+                    throw new InvalidPluginException(String.format("No implementation class specified for plugin '%s' in %s.", pluginId, pluginDescriptor));
+                }
+
+                final Class<?> implClass;
+                try {
+                    implClass = classLoader.loadClass(implClassName);
+                } catch (ClassNotFoundException e) {
+                    throw new InvalidPluginException(String.format(
+                        "Could not find implementation class '%s' for plugin '%s' specified in %s.", implClassName, pluginId,
+                        pluginDescriptor), e);
+                }
+
+                PotentialPlugin<?> potentialPlugin = pluginInspector.inspect(implClass);
+                PluginImplementation<Object> withId = new RegistryAwarePluginImplementation(classLoader, pluginId, potentialPlugin);
+                return Optional.of(withId);
+            }
+        });
+~~~
+首先这里的 classloader 就是之前所说的 ClassLoaderScope，接着通过这个 classloader 通过 PluginId 去查找 findPluginDescriptor：
+~~~
+    @Override
+    public PluginDescriptor findPluginDescriptor(String pluginId) {
+        URL resource = classLoader.getResource("META-INF/gradle-plugins/" + pluginId + ".properties");
+        if (resource == null) {
+            return null;
+        } else {
+            return new PluginDescriptor(resource);
+        }
+    }
+~~~
+写过 Gradle Plugin 的同学应该清楚，有一步需要在 META-INF/gradle-plugins/ 下声明 Plugin 的名字。作用就在这里体现了。implClass = classLoader.loadClass(implClassName); 就会把 Plugin load 到Gradle 的 runtime 中了，最终返回 Plugin 的实现。Plugin 的查找就告一段落，流程比较长，但比较有意思。
