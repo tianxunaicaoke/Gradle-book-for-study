@@ -208,6 +208,22 @@ android {} 在 Groovy 语法中表示: android(Closure closure)，closure 就是
     }
 ~~~
 其中 rehydrate 是 Groovy 提供的函数，可以在 copy closure 的时候，替换 closure 的 delegate，this，owner。最终调用 ClosureBackedAction 的 excute 函数。
+这里可以啰嗦一下关于 Groovy Closure 相关的知识点，讲 Closure 的话首先就要讲委托策略，要理解委托的概念，我们必须首先了解 this 在闭包中的含义。闭包实际上定义了3个不同的东西:
+> 1. this 对应于定义闭包的封闭类
+> 
+> 2. owner 对应于定义闭包的封闭对象，该对象可以是类，也可以是闭包
+> 
+> 3. delegate 对应于第三方对象，在该对象中，当未定义消息的接收者时解析方法调用或属性。
+
+同时闭包定义了多种可供选择的解析策略:
+
+> 1. OWNER_FIRST 是默认策略。如果属性/方法存在于所有者上，那么它将在所有者上被调用。如果没有，则使用委托。
+> 2. DELEGATE_FIRST 首先使用委托，然后才是所有者
+> 3. OWNER_ONLY 只解析所有者上的属性/方法查找:委托将被忽略。
+> 4. DELEGATE_ONLY只解决委托上的属性/方法查找:所有者将被忽略。
+> 5. TO_SELF 供开发人员使用
+
+所以闭包的执行就是按照解析策略来调用配置好的委托。
 ~~~
     public void execute(T delegate) {
         if (closure == null) {
