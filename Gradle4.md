@@ -52,7 +52,7 @@ gradle.plugins 模块中定义了大部分的内置 Plugins，这里就一句带
 
 
 ## plugin 查找
-之前的一篇文章中讲解了有关 Gradle 脚本的编译过程，其中有一个细节省略未说，就是在编译每一个 .gradle 文件的时候都会分为两部分，如果脚本文件里有 buildscript{} 代码块，就会先编译 buildscript{} 里的代码、或者 apply xxx ，或者plugins{} 为一个 class，编译完成之后直接运行，接着编译剩下的代码为一个 class，再运行。
+之前的一篇文章中讲解了有关 Gradle 脚本的编译过程，其中有一个细节省略未说，就是在编译每一个 .gradle 文件的时候都会分为两部分，如果脚本文件里有 buildscript{} 代码块，就会先编译 buildscript{} 里的代码、或者plugins{} 为一个 class，编译完成之后直接运行，接着编译剩下的代码为一个 class，再运行。注意这里有一点需要强调，apply plugin:"xxx" 和 plugins{} 不一样，apply plugin:"xxx" 并不会在第一部分。
 举个简单的例子：
 ~~~
 // case 1
@@ -117,3 +117,145 @@ task clean(type: Delete) {
 
 ~~~
 其中 getInitialPluginRequests 就是获得脚本里的 Plugin 请求，plugins { id 'com.android.application' }，接着合并完所有的 Plugin 请求之后调用 applyPlugins 方法去解析 Plugin 请求。
+
+~~~
+    @Override
+    public void applyPlugins(final PluginRequests requests, final ScriptHandlerInternal scriptHandler, @Nullable final PluginManagerInternal target, final ClassLoaderScope classLoaderScope) {
+        if (target == null || requests.isEmpty()) {
+            defineScriptHandlerClassScope(scriptHandler, classLoaderScope, Collections.emptyList());
+            return;
+        }
+
+        final PluginResolver effectivePluginResolver = wrapInAlreadyInClasspathResolver(classLoaderScope);
+        if (!requests.isEmpty()) {
+            addPluginArtifactRepositories(scriptHandler.getRepositories());
+        }
+        List<Result> results = resolvePluginRequests(requests, effectivePluginResolver);
+
+        // Could be different to ids in the requests as they may be unqualified
+        final Map<Result, PluginId> legacyActualPluginIds = newLinkedHashMap();
+        final Map<Result, PluginImplementation<?>> pluginImpls = newLinkedHashMap();
+        final Map<Result, PluginImplementation<?>> pluginImplsFromOtherLoaders = newLinkedHashMap();
+
+        if (!results.isEmpty()) {
+            for (final Result result : results) {
+                applyPlugin(result.request, result.found.getPluginId(), new Runnable() {
+                    @Override
+                    public void run() {
+                        result.found.execute(new PluginResolveContext() {
+                            @Override
+                            public void addLegacy(PluginId pluginId, Object dependencyNotation) {
+                                legacyActualPluginIds.put(result, pluginId);
+                                scriptHandler.addScriptClassPathDependency(dependencyNotation);
+                            }
+
+                            @Override
+                            public void add(PluginImplementation<?> plugin) {
+                                pluginImpls.put(result, plugin);
+                            }
+
+                            @Override
+                            public void addFromDifferentLoader(PluginImplementation<?> plugin) {
+                                pluginImpls.put(result, plugin);
+                                pluginImplsFromOtherLoaders.put(result, plugin);
+                            }
+                        });
+                    }
+                });
+            }
+        }
+
+        defineScriptHandlerClassScope(scriptHandler, classLoaderScope, pluginImplsFromOtherLoaders.values());
+        applyLegacyPlugins(target, legacyActualPluginIds);
+        applyPlugins(target, pluginImpls);
+    }
+~~~
+解释一下四个参数，第一个 PluginRequests 是通过读取 plugins{} 里的插件请求并且合并了自动添加的一些 core Plugin 的请求。第二个参数 ScriptHandlerInternal 的实现类是 DefaultScriptHandler，
+~~~
+public class DefaultScriptHandler implements ScriptHandler, ScriptHandlerInternal, DynamicObjectAware {
+  ...
+    @Override
+    public void dependencies(Closure configureClosure) {
+        ConfigureUtil.configure(configureClosure, getDependencies());
+    }
+  ...
+}
+~~~
+
+其中的 dependencies 方法就是 buildscript {dependencies {}}的具体实现。第三个参数 PluginManagerInternal 的实现类，就是我在上文提到的 DefaultPluginManager，第四个参数 ClassLoaderScope Represents a particular node in the ClassLoader graph（这是源码里的注解，觉得的翻译的话影响理解）。
+
+回归正题，applyPlugins 里第一步会通过 PluginResolver 去解析 PluginRequest，并且返回解析好的 Result，代码如下：
+~~~
+ private List<Result> resolvePluginRequests(PluginRequests requests, PluginResolver effectivePluginResolver) {
+        return collect(requests, request -> {
+            PluginRequestInternal configuredRequest = pluginResolutionStrategy.applyTo(request);
+            return resolveToFoundResult(effectivePluginResolver, configuredRequest);
+        });
+    }
+~~~
+注意两点：1. PluginResolver 的实现有多个，它们串联在一起，将从头到尾搜索每一个 Resolver，直到找到插件。2. 每一个 PluginRequest 如果找到结果，就会封装成一个 Result 返回，在 Result 里有一个 PluginResolution。上一个代码片：
+~~~
+public class ClassPathPluginResolution implements PluginResolution {
+
+   ...
+
+    @Override
+    public void execute(PluginResolveContext pluginResolveContext) {
+        PluginRegistry pluginRegistry = new DefaultPluginRegistry(pluginInspector, parent);
+        PluginImplementation<?> plugin = pluginRegistry.lookup(pluginId);
+        if (plugin == null) {
+            throw new UnknownPluginException("Plugin with id '" + pluginId + "' not found.");
+        }
+        pluginResolveContext.add(plugin);
+    }
+}
+~~~
+最终是通过  PluginImplementation<?> plugin = pluginRegistry.lookup(pluginId);  DefaultPluginRegistry 来查找到 PluginImplementation。
+如何找到 PluginImplementation，code 如下：
+~~~
+this.idMappings = CacheBuilder.newBuilder().build(new CacheLoader<PluginIdLookupCacheKey, Optional<PluginImplementation<?>>>() {
+            @Override
+            public Optional<PluginImplementation<?>> load(@Nonnull PluginIdLookupCacheKey key) {
+                PluginId pluginId = key.getId();
+                ClassLoader classLoader = key.getClassLoader();
+
+                PluginDescriptorLocator locator = new ClassloaderBackedPluginDescriptorLocator(classLoader);
+
+                PluginDescriptor pluginDescriptor = locator.findPluginDescriptor(pluginId.toString());
+                if (pluginDescriptor == null) {
+                    return Optional.empty();
+                }
+
+                String implClassName = pluginDescriptor.getImplementationClassName();
+                if (!GUtil.isTrue(implClassName)) {
+                    throw new InvalidPluginException(String.format("No implementation class specified for plugin '%s' in %s.", pluginId, pluginDescriptor));
+                }
+
+                final Class<?> implClass;
+                try {
+                    implClass = classLoader.loadClass(implClassName);
+                } catch (ClassNotFoundException e) {
+                    throw new InvalidPluginException(String.format(
+                        "Could not find implementation class '%s' for plugin '%s' specified in %s.", implClassName, pluginId,
+                        pluginDescriptor), e);
+                }
+
+                PotentialPlugin<?> potentialPlugin = pluginInspector.inspect(implClass);
+                PluginImplementation<Object> withId = new RegistryAwarePluginImplementation(classLoader, pluginId, potentialPlugin);
+                return Optional.of(withId);
+            }
+        });
+~~~
+首先这里的 classloader 就是之前所说的 ClassLoaderScope，接着通过这个 classloader 通过 PluginId 去查找 findPluginDescriptor：
+~~~
+    @Override
+    public PluginDescriptor findPluginDescriptor(String pluginId) {
+        URL resource = classLoader.getResource("META-INF/gradle-plugins/" + pluginId + ".properties");
+        if (resource == null) {
+            return null;
+        } else {
+            return new PluginDescriptor(resource);
+        }
+    }
+~~~
+写过 Gradle Plugin 的同学应该清楚，有一步需要在 META-INF/gradle-plugins/ 下声明 Plugin 的名字。作用就在这里体现了。implClass = classLoader.loadClass(implClassName); 就会把 Plugin load 到Gradle 的 runtime 中了，最终返回 Plugin 的实现。Plugin 的查找就告一段落，流程比较长，但比较有意思。
