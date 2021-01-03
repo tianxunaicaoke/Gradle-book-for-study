@@ -2,7 +2,7 @@
 
 有志者，事竟成
 
-## Gradle Project
+## Gradle example
 在之前的一系列文章中，我们从一些方面了解了 Gradle，这一片用一个栗子把她们串联起来。从这篇之后，我们会系统的把 Gradle 的重要组件作以讲解。 Project，我在前文有大量讲解关于".gradle"文件，Project 就是和"build.gradle"一一对应。多模块项目往往一个模块就对应一个 Project，之前的文章讲解了 ".gradle"文件的编译和解析。
 ~~~
 plugins {
